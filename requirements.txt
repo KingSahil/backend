@@ -1,8 +1,8 @@
-fastapi==0.109.0
-uvicorn==0.27.0
-youtube-transcript-api==0.6.2
-openai==1.10.0
-python-dotenv==1.0.0
-pydantic==2.5.3
-httpx==0.26.0
-google-genai==0.9.0
+fastapi
+uvicorn
+youtube-transcript-api
+openai
+python-dotenv
+pydantic
+httpx
+google-genai
