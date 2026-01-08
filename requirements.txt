@@ -1,5 +1,5 @@
-fastapi
-uvicorn
+fastapi[standard]
+uvicorn[standard]
 youtube-transcript-api
 openai
 python-dotenv
