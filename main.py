@@ -260,26 +260,32 @@ async def analyze_video(request: VideoRequest):
         
         # Fetch transcript
         try:
+            ytt_api = YouTubeTranscriptApi()
+            
             # Try to fetch transcript in specified languages or any available language
             if request.languages:
                 # User specified languages
-                fetched_transcript = YouTubeTranscriptApi().fetch(video_id, languages=request.languages)
+                fetched_transcript = ytt_api.fetch(video_id, languages=request.languages)
             else:
-                # Try common languages including Hindi, English, Spanish, etc.
+                # Try to get any available transcript
                 try:
-                    fetched_transcript = YouTubeTranscriptApi().fetch(video_id, languages=['en'])
+                    # First try English
+                    fetched_transcript = ytt_api.fetch(video_id, languages=['en'])
                 except NoTranscriptFound:
-                    # If English not found, try to get any available transcript
-                    transcript_list = YouTubeTranscriptApi().list(video_id)
-                    # Get the first available transcript
-                    if transcript_list:
-                        first_transcript = next(iter(transcript_list), None)
-                        if first_transcript:
-                            fetched_transcript = first_transcript.fetch()
-                        else:
-                            raise NoTranscriptFound(video_id)
+                    # If English not found, get list of available transcripts and use the first one
+                    transcript_list = ytt_api.list(video_id)
+                    
+                    # Try to find any available transcript (prefers manual over auto-generated)
+                    transcript = transcript_list.find_transcript(['en', 'hi', 'es', 'fr', 'de', 'pt', 'ru', 'ja', 'ko', 'zh-Hans', 'zh-Hant', 'ar'])
+                    if transcript:
+                        fetched_transcript = transcript.fetch()
                     else:
-                        raise NoTranscriptFound(video_id)
+                        # If specific languages not found, iterate and get first available
+                        for available_transcript in transcript_list:
+                            fetched_transcript = available_transcript.fetch()
+                            break
+                        else:
+                            raise NoTranscriptFound(video_id, [], None)
         except TranscriptsDisabled:
             raise HTTPException(status_code=404, detail="Transcripts are disabled for this video")
         except NoTranscriptFound:
@@ -389,7 +395,8 @@ async def get_transcript(video_id: str):
     Get transcript only for a YouTube video
     """
     try:
-        fetched_transcript = YouTubeTranscriptApi().fetch(video_id)
+        ytt_api = YouTubeTranscriptApi()
+        fetched_transcript = ytt_api.fetch(video_id)
         
         transcript_segments = [
             TranscriptSegment(
