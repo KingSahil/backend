@@ -148,8 +148,9 @@ Please respond in the following JSON format:
     "overall_summary": "Overall video summary"
 }}"""
 
-    proxies = get_proxy_config()
-    async with httpx.AsyncClient(timeout=120.0, proxies=proxies) as client:
+    proxy_config = get_proxy_config()
+    proxy_url = os.getenv("PROXY_URL") if proxy_config else None
+    async with httpx.AsyncClient(timeout=120.0, proxy=proxy_url) as client:
         try:
             print(f"🔄 Calling OpenRouter API with model: {model}")
             response = await client.post(
@@ -295,17 +296,27 @@ async def analyze_video(request: VideoRequest):
                     transcript_list = ytt_api.fetch(video_id, languages=['en'])
                 except NoTranscriptFound:
                     # If English not found, try to get any available transcript
+                    print(f"⚠️ English transcript not found for {video_id}, trying to list all available transcripts...")
                     available_transcripts = ytt_api.list(video_id)
                     # Get the first available transcript
                     first_transcript = next(iter(available_transcripts), None)
                     if first_transcript:
+                        print(f"✓ Found transcript in language: {first_transcript.language_code}")
                         transcript_list = first_transcript.fetch()
                     else:
-                        raise NoTranscriptFound(video_id)
+                        print(f"❌ No transcripts available for video {video_id}")
+                        raise HTTPException(
+                            status_code=404, 
+                            detail="No transcript available for this video. The video might not have captions enabled."
+                        )
         except TranscriptsDisabled:
             raise HTTPException(status_code=404, detail="Transcripts are disabled for this video")
-        except NoTranscriptFound:
-            raise HTTPException(status_code=404, detail="No transcript found for this video in any language")
+        except NoTranscriptFound as e:
+            print(f"❌ NoTranscriptFound exception: {str(e)}")
+            raise HTTPException(status_code=404, detail=f"No transcript found for this video in any language. Error: {str(e)}")
+        except Exception as e:
+            print(f"❌ Unexpected error fetching transcript: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Error fetching transcript: {str(e)}")
         
         # Format transcript for AI
         transcript_text = "\n".join([
@@ -411,8 +422,25 @@ async def get_transcript(video_id: str):
     Get transcript only for a YouTube video
     """
     try:
+        print(f"🔍 Fetching transcript for video: {video_id}")
         ytt_api = get_youtube_transcript_api()
-        fetched_transcript = ytt_api.fetch(video_id)
+        
+        # Try to get any available transcript
+        try:
+            fetched_transcript = ytt_api.fetch(video_id)
+        except NoTranscriptFound:
+            # Try to list and get first available
+            print(f"⚠️ Default transcript not found, listing all available...")
+            available_transcripts = ytt_api.list(video_id)
+            first_transcript = next(iter(available_transcripts), None)
+            if first_transcript:
+                print(f"✓ Using transcript in language: {first_transcript.language_code}")
+                fetched_transcript = first_transcript.fetch()
+            else:
+                raise HTTPException(
+                    status_code=404, 
+                    detail="No transcript available for this video. The video might not have captions enabled."
+                )
         
         transcript_segments = [
             TranscriptSegment(
@@ -431,8 +459,11 @@ async def get_transcript(video_id: str):
     except TranscriptsDisabled:
         raise HTTPException(status_code=404, detail="Transcripts are disabled for this video")
     except NoTranscriptFound:
-        raise HTTPException(status_code=404, detail="No transcript found for this video")
+        raise HTTPException(status_code=404, detail="No transcript found for this video. Please check if the video has captions enabled.")
+    except HTTPException:
+        raise
     except Exception as e:
+        print(f"❌ Error fetching transcript: {str(e)}")
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
 
 @app.post("/ai-question")
@@ -508,8 +539,8 @@ If the question cannot be answered from the transcript, politely explain that th
                     if os.getenv("OPENROUTER_API_KEY"):
                         try:
                             api_key = os.getenv("OPENROUTER_API_KEY")
-                            proxies = get_proxy_config()
-                            async with httpx.AsyncClient(timeout=60.0, proxies=proxies) as client:
+                            proxy_url = os.getenv("PROXY_URL")
+                            async with httpx.AsyncClient(timeout=60.0, proxy=proxy_url) as client:
                                 response = await client.post(
                                     "https://openrouter.ai/api/v1/chat/completions",
                                     headers={
@@ -548,8 +579,8 @@ If the question cannot be answered from the transcript, politely explain that th
             if not api_key:
                 raise HTTPException(status_code=500, detail="OpenRouter API key not configured")
             
-            proxies = get_proxy_config()
-            async with httpx.AsyncClient(timeout=60.0, proxies=proxies) as client:
+            proxy_url = os.getenv("PROXY_URL")
+            async with httpx.AsyncClient(timeout=60.0, proxy=proxy_url) as client:
                 response = await client.post(
                     "https://openrouter.ai/api/v1/chat/completions",
                     headers={
@@ -657,8 +688,8 @@ Return ONLY a JSON array with this exact structure (no additional text):
                     if os.getenv("OPENROUTER_API_KEY"):
                         try:
                             api_key = os.getenv("OPENROUTER_API_KEY")
-                            proxies = get_proxy_config()
-                            async with httpx.AsyncClient(timeout=60.0, proxies=proxies) as client:
+                            proxy_url = os.getenv("PROXY_URL")
+                            async with httpx.AsyncClient(timeout=60.0, proxy=proxy_url) as client:
                                 response = await client.post(
                                     "https://openrouter.ai/api/v1/chat/completions",
                                     headers={
@@ -699,8 +730,8 @@ Return ONLY a JSON array with this exact structure (no additional text):
             if not api_key:
                 raise HTTPException(status_code=500, detail="OpenRouter API key not configured")
             
-            proxies = get_proxy_config()
-            async with httpx.AsyncClient(timeout=60.0, proxies=proxies) as client:
+            proxy_url = os.getenv("PROXY_URL")
+            async with httpx.AsyncClient(timeout=60.0, proxy=proxy_url) as client:
                 response = await client.post(
                     "https://openrouter.ai/api/v1/chat/completions",
                     headers={
