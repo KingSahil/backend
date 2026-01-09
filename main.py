@@ -286,14 +286,14 @@ async def analyze_video(request: VideoRequest):
             # Try to fetch transcript in specified languages or any available language
             if request.languages:
                 # User specified languages
-                fetched_transcript = YouTubeTranscriptApi(proxies=youtube_proxies).fetch(video_id, languages=request.languages)
+                fetched_transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=request.languages, proxies=youtube_proxies)
             else:
                 # Try common languages including Hindi, English, Spanish, etc.
                 try:
-                    fetched_transcript = YouTubeTranscriptApi(proxies=youtube_proxies).fetch(video_id, languages=['en'])
+                    fetched_transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'], proxies=youtube_proxies)
                 except NoTranscriptFound:
                     # If English not found, try to get any available transcript
-                    transcript_list = YouTubeTranscriptApi(proxies=youtube_proxies).list(video_id)
+                    transcript_list = YouTubeTranscriptApi.list_transcripts(video_id, proxies=youtube_proxies)
                     # Get the first available transcript
                     if transcript_list:
                         first_transcript = next(iter(transcript_list), None)
@@ -310,12 +310,12 @@ async def analyze_video(request: VideoRequest):
         
         # Format transcript for AI
         transcript_text = "\n".join([
-            f"[{format_timestamp(snippet.start)}] {snippet.text}"
-            for snippet in fetched_transcript.snippets
+            f"[{format_timestamp(entry['start'])}] {entry['text']}"
+            for entry in fetched_transcript
         ])
         
         # Get video duration from last timestamp
-        video_duration_seconds = fetched_transcript.snippets[-1].start if fetched_transcript.snippets else 0
+        video_duration_seconds = fetched_transcript[-1]['start'] if fetched_transcript else 0
         video_duration_formatted = format_timestamp(video_duration_seconds)
         
         # Get AI analysis with automatic fallback
@@ -381,11 +381,11 @@ async def analyze_video(request: VideoRequest):
         # Format transcript segments
         transcript_segments = [
             TranscriptSegment(
-                text=snippet.text,
-                start=snippet.start,
-                duration=snippet.duration
+                text=entry['text'],
+                start=entry['start'],
+                duration=entry['duration']
             )
-            for snippet in fetched_transcript.snippets
+            for entry in fetched_transcript
         ]
         
         # Log which provider was used
@@ -413,15 +413,15 @@ async def get_transcript(video_id: str):
     """
     try:
         youtube_proxies = get_youtube_proxy_config()
-        fetched_transcript = YouTubeTranscriptApi(proxies=youtube_proxies).fetch(video_id)
+        fetched_transcript = YouTubeTranscriptApi.get_transcript(video_id, proxies=youtube_proxies)
         
         transcript_segments = [
             TranscriptSegment(
-                text=snippet.text,
-                start=snippet.start,
-                duration=snippet.duration
+                text=entry['text'],
+                start=entry['start'],
+                duration=entry['duration']
             )
-            for snippet in fetched_transcript.snippets
+            for entry in fetched_transcript
         ]
         
         return {
@@ -460,7 +460,7 @@ async def answer_question(request: AIQuestionRequest):
             raise HTTPException(status_code=404, detail="Transcripts are disabled for this video")
         
         # Format transcript for AI
-        transcript_text = " ".join([snippet.text for snippet in fetched_transcript.snippets])
+        transcript_text = " ".join([entry['text'] for entry in fetched_transcript])
         
         # Limit transcript length to avoid token limits (use first ~10000 characters)
         if len(transcript_text) > 10000:
@@ -602,7 +602,7 @@ async def generate_quiz(request: QuizRequest):
             raise HTTPException(status_code=404, detail="Transcripts are disabled for this video")
         
         # Format transcript for AI
-        transcript_text = " ".join([snippet.text for snippet in fetched_transcript.snippets])
+        transcript_text = " ".join([entry['text'] for entry in fetched_transcript])
         
         # Limit transcript length to avoid token limits
         if len(transcript_text) > 8000:
