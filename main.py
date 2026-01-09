@@ -14,6 +14,17 @@ import json
 # Load environment variables
 load_dotenv()
 
+# Proxy configuration
+def get_proxy_config():
+    """Get proxy configuration from environment variables"""
+    proxy_url = os.getenv("PROXY_URL")  # e.g., "http://vknpxgia:zv8wvc3ykm3r@142.111.48.253:7030/"
+    if proxy_url:
+        return {
+            "http://": proxy_url,
+            "https://": proxy_url
+        }
+    return None
+
 app = FastAPI(
     title="YouTube Transcript & Chapter Generator API",
     description="API to fetch YouTube transcripts and generate chapters using AI",
@@ -125,7 +136,8 @@ Please respond in the following JSON format:
     "overall_summary": "Overall video summary"
 }}"""
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    proxies = get_proxy_config()
+    async with httpx.AsyncClient(timeout=120.0, proxies=proxies) as client:
         try:
             print(f"🔄 Calling OpenRouter API with model: {model}")
             response = await client.post(
@@ -484,7 +496,8 @@ If the question cannot be answered from the transcript, politely explain that th
                     if os.getenv("OPENROUTER_API_KEY"):
                         try:
                             api_key = os.getenv("OPENROUTER_API_KEY")
-                            async with httpx.AsyncClient(timeout=60.0) as client:
+                            proxies = get_proxy_config()
+                            async with httpx.AsyncClient(timeout=60.0, proxies=proxies) as client:
                                 response = await client.post(
                                     "https://openrouter.ai/api/v1/chat/completions",
                                     headers={
@@ -523,7 +536,8 @@ If the question cannot be answered from the transcript, politely explain that th
             if not api_key:
                 raise HTTPException(status_code=500, detail="OpenRouter API key not configured")
             
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            proxies = get_proxy_config()
+            async with httpx.AsyncClient(timeout=60.0, proxies=proxies) as client:
                 response = await client.post(
                     "https://openrouter.ai/api/v1/chat/completions",
                     headers={
@@ -630,7 +644,8 @@ Return ONLY a JSON array with this exact structure (no additional text):
                     if os.getenv("OPENROUTER_API_KEY"):
                         try:
                             api_key = os.getenv("OPENROUTER_API_KEY")
-                            async with httpx.AsyncClient(timeout=60.0) as client:
+                            proxies = get_proxy_config()
+                            async with httpx.AsyncClient(timeout=60.0, proxies=proxies) as client:
                                 response = await client.post(
                                     "https://openrouter.ai/api/v1/chat/completions",
                                     headers={
@@ -671,7 +686,8 @@ Return ONLY a JSON array with this exact structure (no additional text):
             if not api_key:
                 raise HTTPException(status_code=500, detail="OpenRouter API key not configured")
             
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            proxies = get_proxy_config()
+            async with httpx.AsyncClient(timeout=60.0, proxies=proxies) as client:
                 response = await client.post(
                     "https://openrouter.ai/api/v1/chat/completions",
                     headers={
