@@ -16,12 +16,22 @@ load_dotenv()
 
 # Proxy configuration
 def get_proxy_config():
-    """Get proxy configuration from environment variables"""
-    proxy_url = os.getenv("PROXY_URL")  # e.g., "http://vknpxgia:zv8wvc3ykm3r@142.111.48.253:7030/"
+    """Get proxy configuration for httpx (OpenRouter/Gemini)"""
+    proxy_url = os.getenv("PROXY_URL")
     if proxy_url:
         return {
             "http://": proxy_url,
             "https://": proxy_url
+        }
+    return None
+
+def get_youtube_proxy_config():
+    """Get proxy configuration for YouTube Transcript API (requests library format)"""
+    proxy_url = os.getenv("PROXY_URL")
+    if proxy_url:
+        return {
+            "http": proxy_url,
+            "https": proxy_url
         }
     return None
 
@@ -271,18 +281,19 @@ async def analyze_video(request: VideoRequest):
         video_id = extract_video_id(request.video_url)
         
         # Fetch transcript
+        youtube_proxies = get_youtube_proxy_config()
         try:
             # Try to fetch transcript in specified languages or any available language
             if request.languages:
                 # User specified languages
-                fetched_transcript = YouTubeTranscriptApi().fetch(video_id, languages=request.languages)
+                fetched_transcript = YouTubeTranscriptApi(proxies=youtube_proxies).fetch(video_id, languages=request.languages)
             else:
                 # Try common languages including Hindi, English, Spanish, etc.
                 try:
-                    fetched_transcript = YouTubeTranscriptApi().fetch(video_id, languages=['en'])
+                    fetched_transcript = YouTubeTranscriptApi(proxies=youtube_proxies).fetch(video_id, languages=['en'])
                 except NoTranscriptFound:
                     # If English not found, try to get any available transcript
-                    transcript_list = YouTubeTranscriptApi().list(video_id)
+                    transcript_list = YouTubeTranscriptApi(proxies=youtube_proxies).list(video_id)
                     # Get the first available transcript
                     if transcript_list:
                         first_transcript = next(iter(transcript_list), None)
@@ -401,7 +412,8 @@ async def get_transcript(video_id: str):
     Get transcript only for a YouTube video
     """
     try:
-        fetched_transcript = YouTubeTranscriptApi().fetch(video_id)
+        youtube_proxies = get_youtube_proxy_config()
+        fetched_transcript = YouTubeTranscriptApi(proxies=youtube_proxies).fetch(video_id)
         
         transcript_segments = [
             TranscriptSegment(
@@ -432,12 +444,13 @@ async def answer_question(request: AIQuestionRequest):
     try:
         # Extract video ID and fetch transcript
         video_id = extract_video_id(request.video_url)
+        youtube_proxies = get_youtube_proxy_config()
         
         try:
-            fetched_transcript = YouTubeTranscriptApi().fetch(video_id, languages=['en'])
+            fetched_transcript = YouTubeTranscriptApi(proxies=youtube_proxies).fetch(video_id, languages=['en'])
         except NoTranscriptFound:
             # Try to get any available transcript
-            transcript_list = YouTubeTranscriptApi().list(video_id)
+            transcript_list = YouTubeTranscriptApi(proxies=youtube_proxies).list(video_id)
             first_transcript = next(iter(transcript_list), None)
             if first_transcript:
                 fetched_transcript = first_transcript.fetch()
@@ -573,12 +586,13 @@ async def generate_quiz(request: QuizRequest):
     try:
         # Extract video ID and fetch transcript
         video_id = extract_video_id(request.video_url)
+        youtube_proxies = get_youtube_proxy_config()
         
         try:
-            fetched_transcript = YouTubeTranscriptApi().fetch(video_id, languages=['en'])
+            fetched_transcript = YouTubeTranscriptApi(proxies=youtube_proxies).fetch(video_id, languages=['en'])
         except NoTranscriptFound:
             # Try to get any available transcript
-            transcript_list = YouTubeTranscriptApi().list(video_id)
+            transcript_list = YouTubeTranscriptApi(proxies=youtube_proxies).list(video_id)
             first_transcript = next(iter(transcript_list), None)
             if first_transcript:
                 fetched_transcript = first_transcript.fetch()
