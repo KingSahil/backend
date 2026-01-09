@@ -257,39 +257,118 @@ async def analyze_video(request: VideoRequest):
     try:
         # Extract video ID
         video_id = extract_video_id(request.video_url)
+        print(f"🎬 Processing video ID: {video_id}")
         
         # Fetch transcript
         try:
             ytt_api = YouTubeTranscriptApi()
             
-            # Try to fetch transcript in specified languages or any available language
+            # Clean up languages - filter out invalid values
+            valid_languages = None
             if request.languages:
-                # User specified languages
-                fetched_transcript = ytt_api.fetch(video_id, languages=request.languages)
-            else:
-                # Try to get any available transcript
+                # Filter out placeholder values like 'string', empty strings, etc.
+                valid_languages = [
+                    lang.strip() for lang in request.languages 
+                    if lang and lang.strip() and lang.strip().lower() not in ['string', 'none', 'null']
+                ]
+                if not valid_languages:
+                    valid_languages = None
+                else:
+                    print(f"📝 User requested languages: {valid_languages}")
+            
+            # Auto-detect and fetch the best available transcript
+            if valid_languages:
+                # User specified valid languages - try those first
                 try:
-                    # First try English
-                    fetched_transcript = ytt_api.fetch(video_id, languages=['en'])
+                    fetched_transcript = ytt_api.fetch(video_id, languages=valid_languages)
+                    print(f"✓ Found transcript in requested languages")
                 except NoTranscriptFound:
-                    # If English not found, get list of available transcripts and use the first one
-                    transcript_list = ytt_api.list(video_id)
-                    
-                    # Try to find any available transcript (prefers manual over auto-generated)
-                    transcript = transcript_list.find_transcript(['en', 'hi', 'es', 'fr', 'de', 'pt', 'ru', 'ja', 'ko', 'zh-Hans', 'zh-Hant', 'ar'])
-                    if transcript:
-                        fetched_transcript = transcript.fetch()
-                    else:
-                        # If specific languages not found, iterate and get first available
-                        for available_transcript in transcript_list:
-                            fetched_transcript = available_transcript.fetch()
+                    # Fall back to auto-detection
+                    print(f"⚠️  Requested languages not found, auto-detecting...")
+                    valid_languages = None
+            
+            if not valid_languages:
+                # Auto-detect: List all available transcripts and pick the best one
+                print(f"🔍 Auto-detecting best available transcript...")
+                transcript_list = ytt_api.list(video_id)
+                
+                # Show what's available
+                available_info = []
+                for t in transcript_list:
+                    status = "MANUAL" if not t.is_generated else "AUTO"
+                    available_info.append(f"{t.language_code} ({t.language}) [{status}]")
+                print(f"📋 Available transcripts: {', '.join(available_info)}")
+                
+                # Priority order for auto-selection:
+                # 1. Manually created English
+                # 2. Manually created in common languages (hi, es, fr, de, pt, ru, ja, ko, zh)
+                # 3. Auto-generated English
+                # 4. Auto-generated in common languages
+                # 5. Any other available transcript
+                
+                selected_transcript = None
+                common_langs = ['en', 'hi', 'es', 'fr', 'de', 'pt', 'ru', 'ja', 'ko', 'zh-Hans', 'zh-Hant']
+                
+                # Try manually created English first
+                for t in transcript_list:
+                    if not t.is_generated and t.language_code == 'en':
+                        selected_transcript = t
+                        print(f"✓ Selected: Manual English transcript")
+                        break
+                
+                # Try manually created common languages
+                if not selected_transcript:
+                    for lang in common_langs:
+                        for t in transcript_list:
+                            if not t.is_generated and t.language_code == lang:
+                                selected_transcript = t
+                                print(f"✓ Selected: Manual {t.language} transcript")
+                                break
+                        if selected_transcript:
                             break
-                        else:
-                            raise NoTranscriptFound(video_id, [], None)
-        except TranscriptsDisabled:
+                
+                # Try auto-generated English
+                if not selected_transcript:
+                    for t in transcript_list:
+                        if t.is_generated and t.language_code == 'en':
+                            selected_transcript = t
+                            print(f"✓ Selected: Auto-generated English transcript")
+                            break
+                
+                # Try auto-generated common languages
+                if not selected_transcript:
+                    for lang in common_langs:
+                        for t in transcript_list:
+                            if t.is_generated and t.language_code == lang:
+                                selected_transcript = t
+                                print(f"✓ Selected: Auto-generated {t.language} transcript")
+                                break
+                        if selected_transcript:
+                            break
+                
+                # Fall back to first available
+                if not selected_transcript:
+                    selected_transcript = next(iter(transcript_list), None)
+                    if selected_transcript:
+                        print(f"✓ Selected: {selected_transcript.language} transcript (first available)")
+                
+                if selected_transcript:
+                    fetched_transcript = selected_transcript.fetch()
+                else:
+                    print(f"❌ No transcripts available")
+                    raise NoTranscriptFound(video_id, [], None)
+                        
+        except TranscriptsDisabled as e:
+            print(f"❌ Transcripts disabled for video {video_id}: {str(e)}")
             raise HTTPException(status_code=404, detail="Transcripts are disabled for this video")
-        except NoTranscriptFound:
+        except NoTranscriptFound as e:
+            print(f"❌ No transcript found for video {video_id}: {str(e)}")
             raise HTTPException(status_code=404, detail="No transcript found for this video in any language")
+        except Exception as e:
+            print(f"❌ Unexpected error fetching transcript: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"Error fetching transcript: {str(e)}")
         
         # Format transcript for AI
         transcript_text = "\n".join([
@@ -389,14 +468,111 @@ async def analyze_video(request: VideoRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
 
-@app.get("/transcript/{video_id}")
+@app.get("/transcript/{video_id:path}")
 async def get_transcript(video_id: str):
     """
-    Get transcript only for a YouTube video
+    Get transcript only for a YouTube video (by video ID or full URL)
     """
     try:
+        # URL decode the input
+        from urllib.parse import unquote
+        video_id = unquote(video_id)
+        print(f"📥 Received input: {video_id}")
+        
+        # Try to extract video ID if a full URL was passed
+        try:
+            actual_video_id = extract_video_id(video_id)
+            print(f"🎬 Extracted video ID: {actual_video_id}")
+        except ValueError:
+            # If extraction fails, assume it's already a video ID
+            actual_video_id = video_id
+            print(f"🎬 Using video ID: {actual_video_id}")
+        
         ytt_api = YouTubeTranscriptApi()
-        fetched_transcript = ytt_api.fetch(video_id)
+        
+        # Try to fetch transcript
+        try:
+            fetched_transcript = ytt_api.fetch(actual_video_id, languages=['en'])
+            print(f"✓ English transcript found")
+        except NoTranscriptFound:
+            print(f"⚠️  English not found, trying other languages...")
+            transcript_list = ytt_api.list(actual_video_id)
+            
+            available_langs = [t.language_code for t in transcript_list]
+            print(f"📋 Available languages: {available_langs}")
+            
+            first_transcript = next(iter(transcript_list), None)
+            if first_transcript:
+                print(f"✓ Using transcript in language: {first_transcript.language_code}")
+                fetched_transcript = first_transcript.fetch()
+            else:
+                raise NoTranscriptFound(actual_video_id, [], None)
+        
+        transcript_segments = [
+            TranscriptSegment(
+                text=snippet.text,
+                start=snippet.start,
+                duration=snippet.duration
+            )
+            for snippet in fetched_transcript.snippets
+        ]
+        
+        return {
+            "video_id": actual_video_id,
+            "transcript": transcript_segments
+        }
+        
+    except TranscriptsDisabled:
+        print(f"❌ Transcripts disabled")
+        raise HTTPException(status_code=404, detail="Transcripts are disabled for this video")
+    except NoTranscriptFound:
+        print(f"❌ No transcript found")
+        raise HTTPException(status_code=404, detail="No transcript found for this video")
+    except Exception as e:
+        print(f"❌ Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+
+class TranscriptRequest(BaseModel):
+    video_url: str
+    languages: Optional[List[str]] = None
+
+@app.post("/transcript")
+async def get_transcript_by_url(request: TranscriptRequest):
+    """
+    Get transcript for a YouTube video (by full URL)
+    """
+    try:
+        # Extract video ID from URL
+        video_id = extract_video_id(request.video_url)
+        print(f"🎬 Fetching transcript for video ID: {video_id}")
+        
+        ytt_api = YouTubeTranscriptApi()
+        
+        # Fetch transcript
+        try:
+            if request.languages:
+                print(f"📝 Fetching transcript in languages: {request.languages}")
+                fetched_transcript = ytt_api.fetch(video_id, languages=request.languages)
+            else:
+                # Try English first, then any available
+                try:
+                    fetched_transcript = ytt_api.fetch(video_id, languages=['en'])
+                    print(f"✓ English transcript found")
+                except NoTranscriptFound:
+                    print(f"⚠️  English not found, trying other languages...")
+                    transcript_list = ytt_api.list(video_id)
+                    first_transcript = next(iter(transcript_list), None)
+                    if first_transcript:
+                        print(f"✓ Using transcript in language: {first_transcript.language_code}")
+                        fetched_transcript = first_transcript.fetch()
+                    else:
+                        raise NoTranscriptFound(video_id, [], None)
+        except TranscriptsDisabled:
+            raise HTTPException(status_code=404, detail="Transcripts are disabled for this video")
+        except NoTranscriptFound:
+            raise HTTPException(status_code=404, detail="No transcript found for this video")
         
         transcript_segments = [
             TranscriptSegment(
@@ -412,11 +588,14 @@ async def get_transcript(video_id: str):
             "transcript": transcript_segments
         }
         
-    except TranscriptsDisabled:
-        raise HTTPException(status_code=404, detail="Transcripts are disabled for this video")
-    except NoTranscriptFound:
-        raise HTTPException(status_code=404, detail="No transcript found for this video")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid YouTube URL: {str(e)}")
+    except HTTPException:
+        raise
     except Exception as e:
+        print(f"❌ Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
 
 @app.post("/ai-question")
