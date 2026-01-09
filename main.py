@@ -3,7 +3,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, HttpUrl
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
-from youtube_transcript_api.proxies import GenericProxyConfig
 import os
 from dotenv import load_dotenv
 import httpx
@@ -14,28 +13,6 @@ from google.genai import types
 import json
 # Load environment variables
 load_dotenv()
-
-# Proxy configuration
-def get_proxy_config():
-    """Get proxy configuration for httpx (OpenRouter/Gemini)"""
-    proxy_url = os.getenv("PROXY_URL")
-    if proxy_url:
-        return {
-            "http://": proxy_url,
-            "https://": proxy_url
-        }
-    return None
-
-def get_youtube_transcript_api():
-    """Get YouTubeTranscriptApi instance with proxy configuration if available"""
-    proxy_url = os.getenv("PROXY_URL")
-    if proxy_url:
-        proxy_config = GenericProxyConfig(
-            http_url=proxy_url,
-            https_url=proxy_url
-        )
-        return YouTubeTranscriptApi(proxy_config=proxy_config)
-    return YouTubeTranscriptApi()
 
 app = FastAPI(
     title="YouTube Transcript & Chapter Generator API",
@@ -148,9 +125,7 @@ Please respond in the following JSON format:
     "overall_summary": "Overall video summary"
 }}"""
 
-    proxy_config = get_proxy_config()
-    proxy_url = os.getenv("PROXY_URL") if proxy_config else None
-    async with httpx.AsyncClient(timeout=120.0, proxy=proxy_url) as client:
+    async with httpx.AsyncClient(timeout=120.0) as client:
         try:
             print(f"🔄 Calling OpenRouter API with model: {model}")
             response = await client.post(
@@ -284,48 +259,40 @@ async def analyze_video(request: VideoRequest):
         video_id = extract_video_id(request.video_url)
         
         # Fetch transcript
-        ytt_api = get_youtube_transcript_api()
         try:
             # Try to fetch transcript in specified languages or any available language
             if request.languages:
                 # User specified languages
-                transcript_list = ytt_api.fetch(video_id, languages=request.languages)
+                fetched_transcript = YouTubeTranscriptApi().fetch(video_id, languages=request.languages)
             else:
                 # Try common languages including Hindi, English, Spanish, etc.
                 try:
-                    transcript_list = ytt_api.fetch(video_id, languages=['en'])
+                    fetched_transcript = YouTubeTranscriptApi().fetch(video_id, languages=['en'])
                 except NoTranscriptFound:
                     # If English not found, try to get any available transcript
-                    print(f"⚠️ English transcript not found for {video_id}, trying to list all available transcripts...")
-                    available_transcripts = ytt_api.list(video_id)
+                    transcript_list = YouTubeTranscriptApi().list(video_id)
                     # Get the first available transcript
-                    first_transcript = next(iter(available_transcripts), None)
-                    if first_transcript:
-                        print(f"✓ Found transcript in language: {first_transcript.language_code}")
-                        transcript_list = first_transcript.fetch()
+                    if transcript_list:
+                        first_transcript = next(iter(transcript_list), None)
+                        if first_transcript:
+                            fetched_transcript = first_transcript.fetch()
+                        else:
+                            raise NoTranscriptFound(video_id)
                     else:
-                        print(f"❌ No transcripts available for video {video_id}")
-                        raise HTTPException(
-                            status_code=404, 
-                            detail="No transcript available for this video. The video might not have captions enabled."
-                        )
+                        raise NoTranscriptFound(video_id)
         except TranscriptsDisabled:
             raise HTTPException(status_code=404, detail="Transcripts are disabled for this video")
-        except NoTranscriptFound as e:
-            print(f"❌ NoTranscriptFound exception: {str(e)}")
-            raise HTTPException(status_code=404, detail=f"No transcript found for this video in any language. Error: {str(e)}")
-        except Exception as e:
-            print(f"❌ Unexpected error fetching transcript: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Error fetching transcript: {str(e)}")
+        except NoTranscriptFound:
+            raise HTTPException(status_code=404, detail="No transcript found for this video in any language")
         
         # Format transcript for AI
         transcript_text = "\n".join([
             f"[{format_timestamp(snippet.start)}] {snippet.text}"
-            for snippet in transcript_list.snippets
+            for snippet in fetched_transcript.snippets
         ])
         
         # Get video duration from last timestamp
-        video_duration_seconds = transcript_list.snippets[-1].start if transcript_list.snippets else 0
+        video_duration_seconds = fetched_transcript.snippets[-1].start if fetched_transcript.snippets else 0
         video_duration_formatted = format_timestamp(video_duration_seconds)
         
         # Get AI analysis with automatic fallback
@@ -395,7 +362,7 @@ async def analyze_video(request: VideoRequest):
                 start=snippet.start,
                 duration=snippet.duration
             )
-            for snippet in transcript_list.snippets
+            for snippet in fetched_transcript.snippets
         ]
         
         # Log which provider was used
@@ -422,25 +389,7 @@ async def get_transcript(video_id: str):
     Get transcript only for a YouTube video
     """
     try:
-        print(f"🔍 Fetching transcript for video: {video_id}")
-        ytt_api = get_youtube_transcript_api()
-        
-        # Try to get any available transcript
-        try:
-            fetched_transcript = ytt_api.fetch(video_id)
-        except NoTranscriptFound:
-            # Try to list and get first available
-            print(f"⚠️ Default transcript not found, listing all available...")
-            available_transcripts = ytt_api.list(video_id)
-            first_transcript = next(iter(available_transcripts), None)
-            if first_transcript:
-                print(f"✓ Using transcript in language: {first_transcript.language_code}")
-                fetched_transcript = first_transcript.fetch()
-            else:
-                raise HTTPException(
-                    status_code=404, 
-                    detail="No transcript available for this video. The video might not have captions enabled."
-                )
+        fetched_transcript = YouTubeTranscriptApi().fetch(video_id)
         
         transcript_segments = [
             TranscriptSegment(
@@ -459,11 +408,8 @@ async def get_transcript(video_id: str):
     except TranscriptsDisabled:
         raise HTTPException(status_code=404, detail="Transcripts are disabled for this video")
     except NoTranscriptFound:
-        raise HTTPException(status_code=404, detail="No transcript found for this video. Please check if the video has captions enabled.")
-    except HTTPException:
-        raise
+        raise HTTPException(status_code=404, detail="No transcript found for this video")
     except Exception as e:
-        print(f"❌ Error fetching transcript: {str(e)}")
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
 
 @app.post("/ai-question")
@@ -474,14 +420,13 @@ async def answer_question(request: AIQuestionRequest):
     try:
         # Extract video ID and fetch transcript
         video_id = extract_video_id(request.video_url)
-        ytt_api = get_youtube_transcript_api()
         
         try:
-            fetched_transcript = ytt_api.fetch(video_id, languages=['en'])
+            fetched_transcript = YouTubeTranscriptApi().fetch(video_id, languages=['en'])
         except NoTranscriptFound:
             # Try to get any available transcript
-            available_transcripts = ytt_api.list(video_id)
-            first_transcript = next(iter(available_transcripts), None)
+            transcript_list = YouTubeTranscriptApi().list(video_id)
+            first_transcript = next(iter(transcript_list), None)
             if first_transcript:
                 fetched_transcript = first_transcript.fetch()
             else:
@@ -490,7 +435,7 @@ async def answer_question(request: AIQuestionRequest):
             raise HTTPException(status_code=404, detail="Transcripts are disabled for this video")
         
         # Format transcript for AI
-        transcript_text = " ".join([entry['text'] for entry in fetched_transcript])
+        transcript_text = " ".join([snippet.text for snippet in fetched_transcript.snippets])
         
         # Limit transcript length to avoid token limits (use first ~10000 characters)
         if len(transcript_text) > 10000:
@@ -539,8 +484,7 @@ If the question cannot be answered from the transcript, politely explain that th
                     if os.getenv("OPENROUTER_API_KEY"):
                         try:
                             api_key = os.getenv("OPENROUTER_API_KEY")
-                            proxy_url = os.getenv("PROXY_URL")
-                            async with httpx.AsyncClient(timeout=60.0, proxy=proxy_url) as client:
+                            async with httpx.AsyncClient(timeout=60.0) as client:
                                 response = await client.post(
                                     "https://openrouter.ai/api/v1/chat/completions",
                                     headers={
@@ -579,8 +523,7 @@ If the question cannot be answered from the transcript, politely explain that th
             if not api_key:
                 raise HTTPException(status_code=500, detail="OpenRouter API key not configured")
             
-            proxy_url = os.getenv("PROXY_URL")
-            async with httpx.AsyncClient(timeout=60.0, proxy=proxy_url) as client:
+            async with httpx.AsyncClient(timeout=60.0) as client:
                 response = await client.post(
                     "https://openrouter.ai/api/v1/chat/completions",
                     headers={
@@ -616,14 +559,13 @@ async def generate_quiz(request: QuizRequest):
     try:
         # Extract video ID and fetch transcript
         video_id = extract_video_id(request.video_url)
-        ytt_api = get_youtube_transcript_api()
         
         try:
-            fetched_transcript = ytt_api.fetch(video_id, languages=['en'])
+            fetched_transcript = YouTubeTranscriptApi().fetch(video_id, languages=['en'])
         except NoTranscriptFound:
             # Try to get any available transcript
-            available_transcripts = ytt_api.list(video_id)
-            first_transcript = next(iter(available_transcripts), None)
+            transcript_list = YouTubeTranscriptApi().list(video_id)
+            first_transcript = next(iter(transcript_list), None)
             if first_transcript:
                 fetched_transcript = first_transcript.fetch()
             else:
@@ -688,8 +630,7 @@ Return ONLY a JSON array with this exact structure (no additional text):
                     if os.getenv("OPENROUTER_API_KEY"):
                         try:
                             api_key = os.getenv("OPENROUTER_API_KEY")
-                            proxy_url = os.getenv("PROXY_URL")
-                            async with httpx.AsyncClient(timeout=60.0, proxy=proxy_url) as client:
+                            async with httpx.AsyncClient(timeout=60.0) as client:
                                 response = await client.post(
                                     "https://openrouter.ai/api/v1/chat/completions",
                                     headers={
@@ -730,8 +671,7 @@ Return ONLY a JSON array with this exact structure (no additional text):
             if not api_key:
                 raise HTTPException(status_code=500, detail="OpenRouter API key not configured")
             
-            proxy_url = os.getenv("PROXY_URL")
-            async with httpx.AsyncClient(timeout=60.0, proxy=proxy_url) as client:
+            async with httpx.AsyncClient(timeout=60.0) as client:
                 response = await client.post(
                     "https://openrouter.ai/api/v1/chat/completions",
                     headers={
