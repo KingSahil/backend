@@ -734,8 +734,46 @@ If the question cannot be answered from the transcript, politely explain that th
                 
     except HTTPException:
         raise
+@app.post("/video-info")
+async def get_video_info(request: VideoRequest):
+    """
+    Get video duration based on transcript timestamps
+    """
+    try:
+        video_id = extract_video_id(request.video_url)
+        
+        try:
+            transcript_list = YouTubeTranscriptApi().list(video_id)
+            # Try to find English or first available
+            transcript = None
+            try:
+                transcript = playlist = YouTubeTranscriptApi().fetch(video_id, languages=['en'])
+            except:
+                first_transcript = next(iter(transcript_list), None)
+                if first_transcript:
+                    transcript = first_transcript.fetch()
+            
+            if transcript:
+                last_segment = transcript[-1]
+                duration_seconds = last_segment['start'] + last_segment['duration']
+                return {
+                    "video_id": video_id,
+                    "duration": format_timestamp(duration_seconds),
+                    "duration_seconds": duration_seconds
+                }
+                
+        except Exception as e:
+            print(f"Error fetching transcript for duration: {e}")
+            
+        return {
+            "video_id": video_id,
+            "duration": "0:00",
+            "duration_seconds": 0
+        }
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to generate answer: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error getting video info: {str(e)}")
+
 
 @app.post("/generate-quiz")
 async def generate_quiz(request: QuizRequest):
