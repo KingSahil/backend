@@ -6,3 +6,4 @@ python-dotenv
 pydantic
 httpx
 google-genai
+yt-dlp

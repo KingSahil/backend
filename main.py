@@ -11,6 +11,7 @@ import re
 import google.genai as genai
 from google.genai import types
 import json
+import yt_dlp
 # Load environment variables
 load_dotenv()
 
@@ -737,36 +738,36 @@ If the question cannot be answered from the transcript, politely explain that th
 @app.post("/video-info")
 async def get_video_info(request: VideoRequest):
     """
-    Get video duration based on transcript timestamps
+    Get video duration based on metadata using yt-dlp
     """
     try:
-        video_id = extract_video_id(request.video_url)
+        video_url = request.video_url
+        
+        # Configure yt-dlp
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'skip_download': True,
+            'format': 'best',
+        }
         
         try:
-            transcript_list = YouTubeTranscriptApi().list(video_id)
-            # Try to find English or first available
-            transcript = None
-            try:
-                transcript = playlist = YouTubeTranscriptApi().fetch(video_id, languages=['en'])
-            except:
-                first_transcript = next(iter(transcript_list), None)
-                if first_transcript:
-                    transcript = first_transcript.fetch()
-            
-            if transcript:
-                last_segment = transcript[-1]
-                duration_seconds = last_segment['start'] + last_segment['duration']
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(video_url, download=False)
+                duration_seconds = info.get('duration', 0)
+                
                 return {
-                    "video_id": video_id,
+                    "video_id": info.get('id'),
                     "duration": format_timestamp(duration_seconds),
                     "duration_seconds": duration_seconds
                 }
                 
         except Exception as e:
-            print(f"Error fetching transcript for duration: {e}")
+            print(f"Error fetching metadata with yt-dlp: {e}")
             
+        # Fallback to 0:00 if everything fails
         return {
-            "video_id": video_id,
+            "video_id": extract_video_id(video_url),
             "duration": "0:00",
             "duration_seconds": 0
         }
