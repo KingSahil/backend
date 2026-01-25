@@ -720,6 +720,125 @@ If the question cannot be answered from the note content, politely explain that 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate answer: {str(e)}")
 
+class QuestionSolutionRequest(BaseModel):
+    question_title: str
+    question_content: str
+    question_type: str
+    api_provider: Optional[str] = "gemini"
+
+@app.post("/ai-question-solution")
+async def get_question_solution(request: QuestionSolutionRequest):
+    """
+    Generate a detailed solution for a question (theory or PYQ)
+    """
+    try:
+        # Prompt construction
+        prompt = f"""You are an expert tutor helping students with their questions.
+
+Question Title: {request.question_title}
+Question Type: {request.question_type}
+
+Question:
+{request.question_content}
+
+Please provide a comprehensive and detailed solution or answer to this question.
+- If it's a theory question, explain the concepts clearly.
+- If it's a Previous Year Question (PYQ), provide a model answer associated with standard marking schemes.
+- Use formatting (bullet points, bold text) to make it easy to read.
+"""
+
+        # Try Gemini first, fallback to OpenRouter on quota error
+        ai_response = None
+        used_provider = request.api_provider or "gemini"
+        
+        if used_provider == "gemini":
+            api_key = os.getenv("GEMINI_API_KEY")
+            if not api_key:
+                raise HTTPException(status_code=500, detail="Gemini API key not configured")
+            
+            try:
+                client = genai.Client(api_key=api_key)
+                response = client.models.generate_content(
+                    model="gemini-3-flash-preview",
+                    contents=prompt
+                )
+                ai_response = response.text
+            except Exception as e:
+                # Check if it's a quota error
+                error_str = str(e)
+                if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "quota" in error_str.lower():
+                    print(f"⚠️  Gemini quota exceeded for question solution, falling back to OpenRouter...")
+                    # Fallback to OpenRouter
+                    if os.getenv("OPENROUTER_API_KEY"):
+                        try:
+                            api_key = os.getenv("OPENROUTER_API_KEY")
+                            async with httpx.AsyncClient(timeout=60.0) as client:
+                                response = await client.post(
+                                    "https://openrouter.ai/api/v1/chat/completions",
+                                    headers={
+                                        "Authorization": f"Bearer {api_key}",
+                                        "Content-Type": "application/json"
+                                    },
+                                    json={
+                                        "model": "anthropic/claude-3-haiku",
+                                        "messages": [{"role": "user", "content": prompt}]
+                                    }
+                                )
+                                
+                                if response.is_success:
+                                    result = response.json()
+                                    ai_response = result["choices"][0]["message"]["content"]
+                                    used_provider = "openrouter (fallback)"
+                                    print(f"✓ Successfully used OpenRouter as fallback for question solution")
+                                else:
+                                    raise HTTPException(status_code=500, detail=f"OpenRouter fallback failed: {response.status_code}")
+                        except Exception as fallback_error:
+                            raise HTTPException(
+                                status_code=503,
+                                detail=f"Gemini quota exceeded and OpenRouter fallback failed: {str(fallback_error)}"
+                            )
+                    else:
+                        raise HTTPException(
+                            status_code=503,
+                            detail="Gemini quota exceeded. Please configure OPENROUTER_API_KEY for automatic fallback."
+                        )
+                else:
+                    # Re-raise if not a quota error
+                    raise HTTPException(status_code=500, detail=f"Gemini API error: {error_str}")
+        else:
+            # Use OpenRouter directly if specified
+            api_key = os.getenv("OPENROUTER_API_KEY")
+            if not api_key:
+                raise HTTPException(status_code=500, detail="OpenRouter API key not configured")
+            
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "model": "anthropic/claude-3-haiku",
+                        "messages": [{"role": "user", "content": prompt}]
+                    }
+                )
+                
+                if not response.is_success:
+                    raise HTTPException(status_code=500, detail=f"OpenRouter API error: {response.status_code}")
+                
+                result = response.json()
+                ai_response = result["choices"][0]["message"]["content"]
+        
+        # Return the response
+        print(f"✓ AI question solution generated using: {used_provider}")
+        return {"solution": ai_response}
+                
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate solution: {str(e)}")
+
 @app.post("/ai-question")
 async def answer_question(request: AIQuestionRequest):
     """
